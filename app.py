@@ -55,7 +55,7 @@ def require_role(required_role):
             if not user_role or user_role not in ROLES:
                 return jsonify({'error': 'Invalid token'}), 401
 
-            if required_role not in ROLES[user_role]:
+            if required_role != user_role:
                 return jsonify({'error': 'Insufficient permissions'}), 403
 
             return f(*args, **kwargs)
