@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CI/CD Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+    <div id="app" class="container mx-auto px-4 py-8">
+        <div class="bg-white shadow-lg rounded-lg p-6">
+            <h1 class="text-2xl font-bold mb-6">CI/CD Dashboard</h1>
+
+            <!-- Login Section -->
+            <div id="login-section" class="mb-8">
+                <button onclick="handleLogin()" class="bg-blue-500 text-white px-4 py-2 rounded">
+                    Login with GitHub
+                </button>
+            </div>
+
+            <!-- Pipeline Section -->
+            <div id="pipeline-section" class="hidden">
+                <h2 class="text-xl font-semibold mb-4">Deployment Pipeline</h2>
+                <div class="grid grid-cols-4 gap-4">
+                    <!-- Pipeline stages -->
+                    <div class="border p-4 rounded">
+                        <h3 class="font-medium">Code Checkout</h3>
+                        <div id="stage-checkout" class="mt-2">Waiting...</div>
+                    </div>
+                    <!-- Add more stages... -->
+                </div>
+
+                <!-- Deploy Button -->
+                <button onclick="triggerDeploy()" class="mt-6 bg-green-500 text-white px-4 py-2 rounded">
+                    Deploy
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Frontend JavaScript
+        let token = localStorage.getItem('auth_token');
+        let userRole = null;
+
+        // Check for token in URL (after OAuth callback)
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const newToken = urlParams.get('token');
+            if (newToken) {
+                token = newToken;
+                localStorage.setItem('auth_token', token);
+                verifyAuth();
+                // Clean up URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+            } else if (token) {
+                verifyAuth();
+            }
+        };
+
+        async function handleLogin() {
+            // Redirect to backend GitHub OAuth route
+            window.location.href = '/auth/github';
+        }
+
+        async function verifyAuth() {
+            try {
+                const response = await fetch('/auth/verify', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    userRole = data.role;
+                    showDashboard();
+                } else {
+                    localStorage.removeItem('auth_token');
+                    token = null;
+                    showLoginSection();
+                }
+            } catch (error) {
+                console.error('Auth verification failed:', error);
+                showLoginSection();
+            }
+        }
+
+        function showDashboard() {
+            document.getElementById('login-section').classList.add('hidden');
+            document.getElementById('pipeline-section').classList.remove('hidden');
+            updateUIBasedOnRole();
+        }
+
+        function showLoginSection() {
+            document.getElementById('login-section').classList.remove('hidden');
+            document.getElementById('pipeline-section').classList.add('hidden');
+        }
+
+        function updateUIBasedOnRole() {
+            const deployButton = document.querySelector('button[onclick="triggerDeploy()"]');
+            if (userRole === 'viewer') {
+                deployButton.classList.add('hidden');
+            } else {
+                deployButton.classList.remove('hidden');
+            }
+        }
+
+        async function triggerDeploy() {
+            try {
+                const response = await fetch('/deploy', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        repo_url: 'your_repo_url',
+                        branch: 'main'
+                    })
+                });
+
+                const data = await response.json();
+                updatePipelineStatus(data);
+            } catch (error) {
+                console.error('Deployment failed:', error);
+            }
+        }
+
+        function updatePipelineStatus(status) {
+            // Update UI based on pipeline status
+            document.getElementById('stage-checkout').textContent = status.checkout || 'Waiting...';
+            // Update other stages...
+        }
+
+        const Cookies = require('Cookies');
+        new Cookies(req,res).set('access_token',token,{
+            httpOnly: true,
+            secure: true, // 7 days
+        });
+    </script>
+</body>
+</html>

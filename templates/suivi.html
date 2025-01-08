@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CI/CD Pipeline Viewer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: center;
+      height: 100vh;
+    }
+
+    h1 {
+      padding: 20px;
+      border: 2px solid #ccc;
+      border-radius: 5px;
+      margin-top: 20px;
+      display: inline-block;
+    }
+
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      margin-top: 20px;
+      border: none;
+      border-radius: 5px;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    button.default {
+      background-color: #007BFF;
+    }
+
+    button.in-progress {
+      background-color: #FFC107; /* Jaune */
+    }
+
+    button.success {
+      background-color: #28A745; /* Vert */
+    }
+
+    button.failure {
+      background-color: #DC3545; /* Rouge */
+    }
+
+    .pipeline {
+      list-style: none;
+      padding: 0;
+      margin: 20px 0 0 0;
+      width: 50%;
+      margin: 0 auto;
+    }
+
+    .step {
+      padding: 10px;
+      margin: 10px 0;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .step.in-progress {
+      background-color: #fdf3c4;
+    }
+
+    .step.success {
+      background-color: #d4edda;
+    }
+
+    .step.failure {
+      background-color: #f8d7da;
+    }
+
+    .status {
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+<h1>CI/CD Pipeline Viewer</h1>
+
+<button id="startButton" class="default">Démarrer l'installation</button>
+
+<ul id="pipeline" class="pipeline">
+  <!-- Steps will be dynamically added here -->
+</ul>
+
+<script>
+  // Pipeline steps
+  const steps = [
+    "Récupération du code sur GitHub",
+    "Compilation et tests",
+    "Analyse du code",
+    "Création de l'image Docker",
+    "Déploiement"
+  ];
+
+  const pipelineElement = document.getElementById('pipeline');
+  const startButton = document.getElementById('startButton');
+
+  // Initialisation des états de chaque étape
+  let currentStepIndex = 0;
+  const stepStatus = Array(steps.length).fill('pending');  // Initialisation à "pending" pour toutes les étapes
+
+  // Fonction pour afficher les étapes du pipeline
+  function renderPipeline() {
+    pipelineElement.innerHTML = '';
+    steps.forEach((step, index) => {
+      const stepElement = document.createElement('li');
+      stepElement.className = 'step';
+
+      // Mise à jour de l'état de chaque étape
+      if (stepStatus[index] === 'in-progress') {
+        stepElement.classList.add('in-progress');
+        stepElement.innerHTML = `<span>${step}</span><span class="status">En cours</span>`;
+      } else if (stepStatus[index] === 'success') {
+        stepElement.classList.add('success');
+        stepElement.innerHTML = `<span>${step}</span><span class="status">Succès</span>`;
+      } else if (stepStatus[index] === 'failure') {
+        stepElement.classList.add('failure');
+        stepElement.innerHTML = `<span>${step}</span><span class="status">Échec</span>`;
+      } else {
+        stepElement.innerHTML = `<span>${step}</span><span class="status">En attente</span>`;
+      }
+
+      pipelineElement.appendChild(stepElement);
+    });
+  }
+
+  // Fonction pour exécuter chaque étape du pipeline
+  function executeStep(index) {
+    if (index >= steps.length) {
+      // Vérifier si l'installation est terminée ou échouée
+      updateButtonStatus();
+      return;
+    }
+
+    stepStatus[index] = 'in-progress';  // Marquer l'étape comme "en cours"
+    renderPipeline();  // Re-render pour afficher la mise à jour
+
+    // Simuler la fin de l'étape après un délai (ici, 2 secondes)
+    setTimeout(() => {
+      const success = Math.random() > 0.2;  // 80% de chance de succès
+      stepStatus[index] = success ? 'success' : 'failure';  // "Succès" ou "Échec"
+
+      renderPipeline();  // Re-render après la fin de l'étape
+
+      // Passer à l'étape suivante si l'étape actuelle a réussi
+      if (success && index < steps.length - 1) {
+        executeStep(index + 1);
+      } else if (!success && index < steps.length - 1) {
+        executeStep(index + 1);  // Continuer même si l'étape échoue (pour la démo)
+      } else if (index === steps.length - 1) {
+        // Si on est à la dernière étape, appeler la fonction pour mettre à jour le bouton
+        updateButtonStatus();
+      }
+    }, 2000);  // Simulation de 2 secondes par étape
+  }
+
+  // Fonction pour mettre à jour le texte et la couleur du bouton
+  function updateButtonStatus() {
+    const allSuccess = stepStatus.every(status => status === 'success');
+    const anyFailure = stepStatus.some(status => status === 'failure');
+
+    if (allSuccess) {
+      startButton.innerText = "Installation terminée";
+      startButton.className = "success";  // Vert
+    } else if (anyFailure) {
+      startButton.innerText = "Installation échouée";
+      startButton.className = "failure";  // Rouge
+    }
+  }
+
+  // Écouteur d'événements pour le bouton de démarrage
+  startButton.addEventListener('click', () => {
+    startButton.disabled = true;  // Désactiver le bouton après un clic
+    startButton.innerText = "Installation en cours...";
+    startButton.className = "in-progress";  // Jaune
+
+    // Réinitialiser les états des étapes à "pending"
+    currentStepIndex = 0;
+    stepStatus.fill('pending');  // Tout réinitialiser à "pending"
+
+    // Re-render pour afficher l'état initial
+    renderPipeline();
+
+    // Démarrer le pipeline à partir de la première étape
+    executeStep(0);
+  });
+
+  // Initialisation de l'affichage (aucune étape en cours au début)
+  renderPipeline();
+</script>
+
+</body>
+</html>
+index.html
+7 Ko
