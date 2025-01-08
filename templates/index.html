@@ -11,32 +11,52 @@
         <div class="bg-white shadow-lg rounded-lg p-6">
             <h1 class="text-2xl font-bold mb-6">CI/CD Dashboard</h1>
 
-            <!-- Login Section -->
+<!--
+            &lt;!&ndash; Login Section &ndash;&gt;
             <div id="login-section" class="mb-8">
                 <button onclick="handleLogin()" class="bg-blue-500 text-white px-4 py-2 rounded">
                     Login with GitHub
                 </button>
             </div>
-
-            <!-- Pipeline Section -->
-            <div id="pipeline-section" class="hidden">
-                <h2 class="text-xl font-semibold mb-4">Deployment Pipeline</h2>
-                <div class="grid grid-cols-4 gap-4">
-                    <!-- Pipeline stages -->
-                    <div class="border p-4 rounded">
-                        <h3 class="font-medium">Code Checkout</h3>
-                        <div id="stage-checkout" class="mt-2">Waiting...</div>
-                    </div>
-                    <!-- Add more stages... -->
+-->
+            <!-- Formulaire de création -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+            <h2 class="text-xl font-semibold mb-4">Créer un nouveau pipeline</h2>
+            <form id="pipelineForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Nom du pipeline</label>
+                    <input type="text" id="pipelineName" required
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
                 </div>
-
-                <!-- Deploy Button -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Statut initial</label>
+                    <select id="pipelineStatus" required
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                        <option value="running">En cours</option>
+                        <option value="success">Succès</option>
+                        <option value="failed">Échec</option>
+                        <option value="cancelled">Annulé</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">URL du dépôt GitHub</label>
+                     <input type="url" id="pipelineRepoUrl" placeholder="https://github.com/user/repo"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                </div>
                 <button onclick="triggerDeploy()" class="mt-6 bg-green-500 text-white px-4 py-2 rounded">
                     Deploy
                 </button>
-            </div>
+            </form>
+        </div>
+
+            <!-- Liste des pipelines -->
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Pipelines existants</h2>
+            <div id="pipelinesList" class="space-y-4"></div>
         </div>
     </div>
+    </div>
+
 
     <script>
         // Frontend JavaScript
