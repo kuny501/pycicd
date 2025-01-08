@@ -162,11 +162,7 @@ def github_callback():
     # Redirect to frontend with token
     return render_template('index.html')
 
-@app.route('/login-success')
-def login_success():
-    token = request.args.get('token')
-    # Handle the token and return appropriate response
-    return jsonify({"status": "success", "token": token})
+
 @app.route('/auth/verify', methods=['GET'])
 def verify_auth():
     """Verify authentication token"""
@@ -226,11 +222,6 @@ def pipeline_status():
     """Get current pipeline status"""
     # Implement pipeline status tracking
     pass
-
-@app.route('/', methods=['GET'])
-def index():
-    return render_template('index.html')
-
 
 if __name__ == '__main__':
     app.run(debug=True)
