@@ -202,32 +202,29 @@ def deploy():
         compile_and_test_java_project(BACKEND_PATH)
         print("Compilation maven TU successfully")
 
-        # 3. Build Docker image
-        """client = docker.from_env()
-        image = client.images.build(path='./tmp/app', tag='app:latest')"""
+        '''3. 
+        run_docker_compose(DOCKER_COMPOSE_PATH)
+        print("Built Docker image successfully")'''
 
-        # 4. Connect to VM and deploy
+        # 3. Connect to VM and deploy
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], password="IMTCICD123$")
-        stdin, stdout, stderr = ssh.exec_command('cd Desktop')
-        print(stdout.read().decode())
-        stdin, stdout, stderr = ssh.exec_command('touch Desktop/coucouKun')
-        print(stdout.read().decode())
-        ssh.close()
+
+        # 4. Copy app to VM
+        run_command("cmd.exe /c cd")
+        run_command("cmd.exe /c \"scp tmp/app appserver@"+ CONFIG['VM_HOST'] + ":/home/appserver/LibrarIMT\"")
 
         # 5. Run deployment commands
-        """commands = [
-            'docker pull app:latest',
-            'docker stop app || true',
-            'docker rm app || true',
-            'docker run -d --name app app:latest'
+        commands = [
+            'cd LibrarIMT && docker-compose up -d',
         ]
 
         for cmd in commands:
             stdin, stdout, stderr = ssh.exec_command(cmd)
+            print(stdout.read().decode())
             if stderr.channel.recv_exit_status() != 0:
-                raise Exception(f"Deployment failed: {stderr.read().decode()}")"""
+                raise Exception(f"Deployment failed: {stderr.read().decode()}")
 
         return jsonify({'status': 'success', 'message': 'Deployment completed'})
 
@@ -344,6 +341,44 @@ def compile_and_test_java_project(project_path):
     ]
     for command in commands:
         run_maven_command(command, project_path)
+
+# Chemin en dur pour le répertoire du fichier Docker Compose
+DOCKER_COMPOSE_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app"
+
+def run_command(command, working_dir=None):
+    """
+    Exécute une commande système dans un répertoire spécifique.
+    :param command: Liste des arguments de la commande.
+    :param working_dir: Répertoire dans lequel exécuter la commande.
+    """
+    try:
+        print(f"Exécution de la commande : {command} dans {working_dir or os.getcwd()}")
+        result = subprocess.run(command, cwd=working_dir, check=True, text=True, capture_output=True)
+        print("Sortie standard")
+        print(result.stdout)
+    except FileNotFoundError:
+        print("Erreur : Commande introuvable.")
+        exit(1)
+    except subprocess.CalledProcessError as e:
+        print("Erreur lors de l'exécution de la commande.")
+        print("Sortie standard")
+        print(e.stdout)
+        print("Sortie d'erreur")
+        print(e.stderr)
+        exit(1)
+
+def run_docker_compose(compose_path):
+    """
+    Exécute Docker Compose à partir d'un chemin spécifique.
+    :param compose_path: Chemin contenant le fichier docker-compose.yml.
+    """
+    docker_compose_file = os.path.join(compose_path, "compose.yml")
+    if not os.path.exists(docker_compose_file):
+        print(f"Erreur : Aucun fichier docker-compose.yml trouvé dans {compose_path}.")
+        exit(1)
+
+    command = ["docker-compose", "up", "--build", "-d"]
+    run_command(command, compose_path)
 
 
 if __name__ == '__main__':
