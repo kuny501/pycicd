@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Callback</title>
+</head>
+<body>
+    <script>
+        window.onload = function() {
+            login();
+        };
+
+        async function login() {
+            const urlParams = new URLSearchParams(window.location.search).get("code");
+            console.log(urlParams);
+            const response = await fetch('/auth/getToken?code='+urlParams).then(response => response.text());
+            localStorage.setItem('token', response);
+            window.location.replace('/index.html');
+        }
+
+        function logout() {
+          localStorage.removeItem('token');
+        }
+    </script>
+</body>
+</html>

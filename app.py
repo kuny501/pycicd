@@ -1,6 +1,6 @@
-# Backend (app.py)
-from flask import Flask, request, jsonify, redirect, render_template
+from flask import Flask, request, jsonify, redirect, render_template, make_response, session
 from flask_cors import CORS
+from git import Repo
 from oauth2client import client
 import paramiko
 import docker
@@ -8,8 +8,9 @@ import os
 import git
 import json
 from functools import wraps
-
 from jwt import encode, decode
+import subprocess
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -34,8 +35,10 @@ users_db = {}
 ROLES = {
     'admin': ['deploy', 'view_logs', 'manage_users'],
     'developer': ['deploy', 'view_logs'],
-    'viewer': ['view_logs']
+    'viewer': ['deploy','view_logs']
 }
+
+app.secret_key = 'IMTCICD-SecretKey'
 
 
 # Decorator for role-based access control
@@ -52,7 +55,7 @@ def require_role(required_role):
             if not user_role or user_role not in ROLES:
                 return jsonify({'error': 'Invalid token'}), 401
 
-            if required_role not in ROLES[user_role]:
+            if required_role != user_role:
                 return jsonify({'error': 'Insufficient permissions'}), 403
 
             return f(*args, **kwargs)
@@ -122,12 +125,12 @@ def github_login():
                     f'scope=user:email')
 
 
-@app.route('/auth/callback', methods=['GET'])
+@app.route('/auth/getToken', methods=['GET'])
 def github_callback():
     """Handle GitHub OAuth callback"""
     code = request.args.get('code')
     if not code:
-        return jsonify({'error': 'No code provided'}), 400
+        return redirect("/")
 
     # Exchange code for access token
     response = requests.post(
@@ -158,8 +161,14 @@ def github_callback():
 
     # Create JWT token
     token = create_jwt_token(user)
+    return token, 200
 
-    # Redirect to frontend with token
+@app.route('/auth/callback', methods=['GET'])
+def handle_github_callback():
+    return render_template('callback.html')
+
+@app.route('/index.html', methods=['GET'])
+def get_index():
     return render_template('index.html')
 
 
@@ -178,35 +187,42 @@ def verify_auth():
 
 
 @app.route('/deploy', methods=['POST'])
-@require_role('deploy')
+@require_role('viewer')
 def deploy():
     """Handle deployment request"""
     try:
         # 1. Pull latest code from GitHub
         repo_url = request.json.get('repo_url')
-        branch = request.json.get('branch', 'main')
-        repo = git.Repo.clone_from(repo_url, '/tmp/app')
-        repo.git.checkout(branch)
+        clone_github_repo(repo_url, './tmp/app')
+        print("Cloned repo successfully")
 
-        # 2. Build Docker image
-        client = docker.from_env()
-        image = client.images.build(path='/tmp/app', tag='app:latest')
+        # 2. Compilation maven/gradle avec run des TU
+        """# Run tests with Maven or Gradle"""
+        BACKEND_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app\LibrarIMTBackend"
+        compile_and_test_java_project(BACKEND_PATH)
+        print("Compilation maven TU successfully")
+
+        '''3. 
+        run_docker_compose(DOCKER_COMPOSE_PATH)
+        print("Built Docker image successfully")'''
 
         # 3. Connect to VM and deploy
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], key_filename=CONFIG['VM_KEY_PATH'])
+        ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], password="IMTCICD123$")
 
-        # 4. Run deployment commands
+        # 4. Copy app to VM
+        run_command("cmd.exe /c cd")
+        run_command("cmd.exe /c \"scp tmp/app appserver@"+ CONFIG['VM_HOST'] + ":/home/appserver/LibrarIMT\"")
+
+        # 5. Run deployment commands
         commands = [
-            'docker pull app:latest',
-            'docker stop app || true',
-            'docker rm app || true',
-            'docker run -d --name app app:latest'
+            'cd LibrarIMT && docker-compose up -d',
         ]
 
         for cmd in commands:
             stdin, stdout, stderr = ssh.exec_command(cmd)
+            print(stdout.read().decode())
             if stderr.channel.recv_exit_status() != 0:
                 raise Exception(f"Deployment failed: {stderr.read().decode()}")
 
@@ -222,6 +238,148 @@ def pipeline_status():
     """Get current pipeline status"""
     # Implement pipeline status tracking
     pass
+
+@app.route('/', methods=['GET'])
+def get_authpage():
+    return render_template('GitAuth.html')
+
+# In-memory storage for pipelines (replace with database in production)
+pipelines_db = {}
+
+@app.route('/api/pipelines', methods=['GET'])
+@require_role('view_logs')
+def get_pipelines():
+    """Get all pipelines"""
+    pipelines_list = list(pipelines_db.values())
+    # Sort by creation date, newest first
+    pipelines_list.sort(key=lambda x: x['created_at'], reverse=True)
+    return jsonify(pipelines_list)
+
+
+@app.route('/api/pipelines', methods=['POST'])
+@require_role('deploy')
+def create_pipeline():
+    """Create a new pipeline"""
+    data = request.json
+    if not all(key in data for key in ['name', 'status', 'repo_url']):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    pipeline_id = str(len(pipelines_db) + 1)
+
+    pipeline = {
+        'id': pipeline_id,
+        'name': data['name'],
+        'status': data['status'],
+        'repo_url': data['repo_url'],
+        'created_at': datetime.utcnow().isoformat(),
+        'created_by': get_user_from_token(request.headers['Authorization'])
+    }
+
+    pipelines_db[pipeline_id] = pipeline
+    return jsonify(pipeline), 201
+
+
+@app.route('/api/pipelines/<pipeline_id>/cancel', methods=['POST'])
+@require_role('deploy')
+def cancel_pipeline(pipeline_id):
+    """Cancel a running pipeline"""
+    if pipeline_id not in pipelines_db:
+        return jsonify({'error': 'Pipeline not found'}), 404
+
+    pipeline = pipelines_db[pipeline_id]
+    if pipeline['status'] != 'running':
+        return jsonify({'error': 'Pipeline is not running'}), 400
+
+    pipeline['status'] = 'cancelled'
+    return jsonify(pipeline)
+
+
+def get_user_from_token(auth_header):
+    """Extract user information from JWT token"""
+    try:
+        token = auth_header.split(' ')[1]
+        payload = jwt.decode(token, CONFIG['JWT_SECRET_KEY'], algorithms=['HS256'])
+        return payload.get('email')
+    except:
+        return None
+
+def clone_github_repo(repo_url, destination_folder):
+    try:
+        print(f"Clonage du dépôt depuis {repo_url} dans {destination_folder}...")
+        Repo.clone_from(repo_url, destination_folder)
+        print("Clonage terminé avec succès !")
+    except Exception as e:
+        print(f"Erreur lors du clonage : {e}")
+
+
+def run_maven_command(command, project_path):
+    try:
+        # Spécifiez le chemin complet vers mvn.bat
+        maven_executable = r"E:\IMT\CI2\PCS\apache-maven-3.9.9-bin\apache-maven-3.9.9\bin\mvn.cmd" # Remplacez avec votre propre chemin si nécessaire
+        full_command = [maven_executable] + command
+        print (full_command)
+        print(f"Exécution de la commande : {' '.join(full_command)} dans {project_path}")
+        result = subprocess.run(full_command, cwd=project_path, check=True, text=True, capture_output=True)
+        print("Sortie standard :")
+        print(result.stdout)
+    except FileNotFoundError:
+        print("Erreur : Maven n'est pas trouvé. Vérifiez le chemin de Maven.")
+        exit(1)
+    except subprocess.CalledProcessError as e:
+        print("Erreur lors de l'exécution de Maven.")
+        print("Sortie standard :")
+        print(e.stdout)
+        print("Sortie d'erreur :")
+        print(e.stderr)
+        exit(1)
+
+def compile_and_test_java_project(project_path):
+    # Liste des commandes à exécuter
+    commands = [
+    ["clean", "compile"],  # Compilation
+    ["test"]  # Tests unitaires
+    ]
+    for command in commands:
+        run_maven_command(command, project_path)
+
+# Chemin en dur pour le répertoire du fichier Docker Compose
+DOCKER_COMPOSE_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app"
+
+def run_command(command, working_dir=None):
+    """
+    Exécute une commande système dans un répertoire spécifique.
+    :param command: Liste des arguments de la commande.
+    :param working_dir: Répertoire dans lequel exécuter la commande.
+    """
+    try:
+        print(f"Exécution de la commande : {command} dans {working_dir or os.getcwd()}")
+        result = subprocess.run(command, cwd=working_dir, check=True, text=True, capture_output=True)
+        print("Sortie standard")
+        print(result.stdout)
+    except FileNotFoundError:
+        print("Erreur : Commande introuvable.")
+        exit(1)
+    except subprocess.CalledProcessError as e:
+        print("Erreur lors de l'exécution de la commande.")
+        print("Sortie standard")
+        print(e.stdout)
+        print("Sortie d'erreur")
+        print(e.stderr)
+        exit(1)
+
+def run_docker_compose(compose_path):
+    """
+    Exécute Docker Compose à partir d'un chemin spécifique.
+    :param compose_path: Chemin contenant le fichier docker-compose.yml.
+    """
+    docker_compose_file = os.path.join(compose_path, "compose.yml")
+    if not os.path.exists(docker_compose_file):
+        print(f"Erreur : Aucun fichier docker-compose.yml trouvé dans {compose_path}.")
+        exit(1)
+
+    command = ["docker-compose", "up", "--build", "-d"]
+    run_command(command, compose_path)
+
 
 if __name__ == '__main__':
     app.run(debug=True)

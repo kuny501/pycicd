@@ -40,8 +40,11 @@
 
         // Modified callback handling
         window.onload = async function() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const token = urlParams.get('token');
+            let token = sessionStorage.getItem('token');
+            if (!token) {
+                const urlParams = new URLSearchParams(window.location.search);
+                token = urlParams.get('token');
+            }
 
             if (token) {
                 try {
