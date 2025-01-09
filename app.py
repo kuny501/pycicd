@@ -1,4 +1,3 @@
-# Backend (app.py)
 from flask import Flask, request, jsonify, redirect, render_template, make_response, session
 from flask_cors import CORS
 from git import Repo
@@ -9,8 +8,9 @@ import os
 import git
 import json
 from functools import wraps
-
 from jwt import encode, decode
+import subprocess
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -35,7 +35,7 @@ users_db = {}
 ROLES = {
     'admin': ['deploy', 'view_logs', 'manage_users'],
     'developer': ['deploy', 'view_logs'],
-    'viewer': ['view_logs']
+    'viewer': ['deploy','view_logs']
 }
 
 app.secret_key = 'IMTCICD-SecretKey'
@@ -193,20 +193,31 @@ def deploy():
     try:
         # 1. Pull latest code from GitHub
         repo_url = request.json.get('repo_url')
-        clone_github_repo(repo_url, '/tmp/app')
+        clone_github_repo(repo_url, './tmp/app')
         print("Cloned repo successfully")
 
-        # 2. Build Docker image
-        client = docker.from_env()
-        image = client.images.build(path='/tmp/app', tag='app:latest')
+        # 2. Compilation maven/gradle avec run des TU
+        """# Run tests with Maven or Gradle"""
+        BACKEND_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app\LibrarIMTBackend"
+        compile_and_test_java_project(BACKEND_PATH)
+        print("Compilation maven TU successfully")
 
-        # 3. Connect to VM and deploy
+        # 3. Build Docker image
+        """client = docker.from_env()
+        image = client.images.build(path='./tmp/app', tag='app:latest')"""
+
+        # 4. Connect to VM and deploy
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], key_filename=CONFIG['VM_KEY_PATH'])
+        ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], password="IMTCICD123$")
+        stdin, stdout, stderr = ssh.exec_command('cd Desktop')
+        print(stdout.read().decode())
+        stdin, stdout, stderr = ssh.exec_command('touch Desktop/coucouKun')
+        print(stdout.read().decode())
+        ssh.close()
 
-        # 4. Run deployment commands
-        commands = [
+        # 5. Run deployment commands
+        """commands = [
             'docker pull app:latest',
             'docker stop app || true',
             'docker rm app || true',
@@ -216,7 +227,7 @@ def deploy():
         for cmd in commands:
             stdin, stdout, stderr = ssh.exec_command(cmd)
             if stderr.channel.recv_exit_status() != 0:
-                raise Exception(f"Deployment failed: {stderr.read().decode()}")
+                raise Exception(f"Deployment failed: {stderr.read().decode()}")"""
 
         return jsonify({'status': 'success', 'message': 'Deployment completed'})
 
@@ -302,6 +313,38 @@ def clone_github_repo(repo_url, destination_folder):
         print("Clonage terminé avec succès !")
     except Exception as e:
         print(f"Erreur lors du clonage : {e}")
+
+
+def run_maven_command(command, project_path):
+    try:
+        # Spécifiez le chemin complet vers mvn.bat
+        maven_executable = r"E:\IMT\CI2\PCS\apache-maven-3.9.9-bin\apache-maven-3.9.9\bin\mvn.cmd" # Remplacez avec votre propre chemin si nécessaire
+        full_command = [maven_executable] + command
+        print (full_command)
+        print(f"Exécution de la commande : {' '.join(full_command)} dans {project_path}")
+        result = subprocess.run(full_command, cwd=project_path, check=True, text=True, capture_output=True)
+        print("Sortie standard :")
+        print(result.stdout)
+    except FileNotFoundError:
+        print("Erreur : Maven n'est pas trouvé. Vérifiez le chemin de Maven.")
+        exit(1)
+    except subprocess.CalledProcessError as e:
+        print("Erreur lors de l'exécution de Maven.")
+        print("Sortie standard :")
+        print(e.stdout)
+        print("Sortie d'erreur :")
+        print(e.stderr)
+        exit(1)
+
+def compile_and_test_java_project(project_path):
+    # Liste des commandes à exécuter
+    commands = [
+    ["clean", "compile"],  # Compilation
+    ["test"]  # Tests unitaires
+    ]
+    for command in commands:
+        run_maven_command(command, project_path)
+
 
 if __name__ == '__main__':
     app.run(debug=True)
