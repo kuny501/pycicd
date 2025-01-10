@@ -1,3 +1,8 @@
+import re
+import shutil
+import socketserver
+import threading
+
 from flask import Flask, request, jsonify, redirect, render_template, make_response, session
 from flask_cors import CORS
 from git import Repo
@@ -10,9 +15,12 @@ import json
 from functools import wraps
 from jwt import encode, decode
 import subprocess
-
+import socket
+import http
+import time
 
 from dotenv import load_dotenv
+
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
@@ -35,7 +43,7 @@ users_db = {}
 ROLES = {
     'admin': ['deploy', 'view_logs', 'manage_users'],
     'developer': ['deploy', 'view_logs'],
-    'viewer': ['deploy','view_logs']
+    'viewer': ['deploy', 'view_logs']
 }
 
 app.secret_key = 'IMTCICD-SecretKey'
@@ -163,9 +171,11 @@ def github_callback():
     token = create_jwt_token(user)
     return token, 200
 
+
 @app.route('/auth/callback', methods=['GET'])
 def handle_github_callback():
     return render_template('callback.html')
+
 
 @app.route('/index.html', methods=['GET'])
 def get_index():
@@ -188,66 +198,128 @@ def verify_auth():
 
 @app.route('/deploy', methods=['POST'])
 @require_role('viewer')
-def deploy():
+def deploy(rollbackMode=False):
     """Handle deployment request"""
     try:
+        if os.path.isdir('./tmp.old'):
+            os.system('powershell /c \"Remove-Item -Recurse -Force ./tmp.old\"')
+
+        if os.path.isdir('./tmp'):
+            os.rename('./tmp', './tmp.old')  # Rename cloned repo to app
+
         # 1. Pull latest code from GitHub
+        '''if not rollbackMode:'''
         repo_url = request.json.get('repo_url')
         clone_github_repo(repo_url, './tmp/app')
         print("Cloned repo successfully")
 
         # 2. Compilation maven/gradle avec run des TU
-        """# Run tests with Maven or Gradle"""
+        #Run tests with Maven or Gradle
         BACKEND_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app\LibrarIMTBackend"
+        #else:
+        #BACKEND_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp.old\app\LibrarIMTBackend
         compile_and_test_java_project(BACKEND_PATH)
         print("Compilation maven TU successfully")
 
-        '''3. 
-        run_docker_compose(DOCKER_COMPOSE_PATH)
-        print("Built Docker image successfully")'''
+        #run_maven_command("mvn clean verify sonar:sonar -Dsonar.projectKey=LibrarIMT -Dsonar.projectName='LibrarIMT' -Dsonar.host.url=http://localhost:9000 -Dsonar.token=sqp_e771c5daffbe8923cb1dcd3eaa2d992361a5272f", BACKEND_PATH)
+
+        # Getting local IPV4 address
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))  # Google Public DNS
+        host_ip = s.getsockname()[0]
+        s.close()
+
+        # Start Python HTTP Server to send the code
+        PORT = 8081
+        Handler = http.server.SimpleHTTPRequestHandler
+
+        def run_server():
+            with socketserver.TCPServer(("", PORT), Handler) as httpd:
+                print("serving at port", PORT)
+                httpd.serve_forever()
+
+        server_thread = threading.Thread(target=run_server)
+        server_thread.daemon = True
+        server_thread.start()
 
         # 3. Connect to VM and deploy
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], password="IMTCICD123$")
+        print("Connect to VM successfully")
 
-        # 4. Copy app to VM
-        run_command("cmd.exe /c cd")
-        run_command("cmd.exe /c \"scp tmp/app appserver@"+ CONFIG['VM_HOST'] + ":/home/appserver/LibrarIMT\"")
+        # 4. Run deployment commands
+        channel = ssh.invoke_shell()
+        print("Running deployment commands")
+        channel.send('mkdir LibrarIMT')
+        channel.send('\n')
+        channel.send('cd LibrarIMT')
+        channel.send('\n')
+       # channel.send('sudo docker-compose down --rmi all')
+       # channel.send('\n')
+       # time.sleep(1)
+        #channel.send('IMTCICD123$')
+       # channel.send('\n')
+       # time.sleep(2)
+        channel.send('rm -rf *')
+        channel.send('\n')
+        channel.send('wget --no-parent -r http://' + host_ip + ':8081/tmp/app -nH --cut-dirs=2')
+        channel.send('\n')
+        time.sleep(2)
+        channel.send('sudo docker-compose up -d --build')
+        channel.send('\n')
+        channel.send('IMTCICD123$')
+        channel.send('\n')
+        time.sleep(1)
+        """
+        while not finished:
+            channel.send("sudo docker ps\n")
+            output = channel.recv(65635)
+            print(output.decode())
+            time.sleep(3)
+            if 'librarimt-frontend' in output.decode() and 'librarimt-backend' in output.decode() and 'CONTAINER ID' in output.decode():
+                finished = True"""
 
-        # 5. Run deployment commands
-        commands = [
-            'cd LibrarIMT && docker-compose up -d',
-        ]
+        channel.send('exit')
+        channel.send('\n')
 
-        for cmd in commands:
-            stdin, stdout, stderr = ssh.exec_command(cmd)
-            print(stdout.read().decode())
-            if stderr.channel.recv_exit_status() != 0:
-                raise Exception(f"Deployment failed: {stderr.read().decode()}")
-
+        #5. INTEGRATION TEST
+        # Sending get request to VM_HOST:3000
+        """print("Running integration test")
+        response = requests.get('http://'+CONFIG['VM_HOST']+':3000')
+        print("Integration test status:", response.status_code)
+        if (response.status_code != 200):
+            rollback()
+            return jsonify({'status': 'error', 'integration_test_status': response.status_code}), 500"""
         return jsonify({'status': 'success', 'message': 'Deployment completed'})
 
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+def rollback():
+    deploy(rollbackMode=True)
+
+
 @app.route('/pipeline/status', methods=['GET'])
-@require_role('view_logs')
+@require_role('viewer')
 def pipeline_status():
     """Get current pipeline status"""
     # Implement pipeline status tracking
     pass
 
+
 @app.route('/', methods=['GET'])
 def get_authpage():
     return render_template('GitAuth.html')
 
+
 # In-memory storage for pipelines (replace with database in production)
 pipelines_db = {}
 
+
 @app.route('/api/pipelines', methods=['GET'])
-@require_role('view_logs')
+@require_role('viewer')
 def get_pipelines():
     """Get all pipelines"""
     pipelines_list = list(pipelines_db.values())
@@ -257,7 +329,7 @@ def get_pipelines():
 
 
 @app.route('/api/pipelines', methods=['POST'])
-@require_role('deploy')
+@require_role('viewer')
 def create_pipeline():
     """Create a new pipeline"""
     data = request.json
@@ -280,7 +352,7 @@ def create_pipeline():
 
 
 @app.route('/api/pipelines/<pipeline_id>/cancel', methods=['POST'])
-@require_role('deploy')
+@require_role('viewer')
 def cancel_pipeline(pipeline_id):
     """Cancel a running pipeline"""
     if pipeline_id not in pipelines_db:
@@ -303,6 +375,7 @@ def get_user_from_token(auth_header):
     except:
         return None
 
+
 def clone_github_repo(repo_url, destination_folder):
     try:
         print(f"Clonage du dépôt depuis {repo_url} dans {destination_folder}...")
@@ -315,9 +388,9 @@ def clone_github_repo(repo_url, destination_folder):
 def run_maven_command(command, project_path):
     try:
         # Spécifiez le chemin complet vers mvn.bat
-        maven_executable = r"E:\IMT\CI2\PCS\apache-maven-3.9.9-bin\apache-maven-3.9.9\bin\mvn.cmd" # Remplacez avec votre propre chemin si nécessaire
+        maven_executable = r"E:\IMT\CI2\PCS\apache-maven-3.9.9-bin\apache-maven-3.9.9\bin\mvn.cmd"  # Remplacez avec votre propre chemin si nécessaire
         full_command = [maven_executable] + command
-        print (full_command)
+        print(full_command)
         print(f"Exécution de la commande : {' '.join(full_command)} dans {project_path}")
         result = subprocess.run(full_command, cwd=project_path, check=True, text=True, capture_output=True)
         print("Sortie standard :")
@@ -333,17 +406,20 @@ def run_maven_command(command, project_path):
         print(e.stderr)
         exit(1)
 
+
 def compile_and_test_java_project(project_path):
     # Liste des commandes à exécuter
     commands = [
-    ["clean", "compile"],  # Compilation
-    ["test"]  # Tests unitaires
+        ["clean", "compile"],  # Compilation
+        ["test"]  # Tests unitaires
     ]
     for command in commands:
         run_maven_command(command, project_path)
 
+
 # Chemin en dur pour le répertoire du fichier Docker Compose
 DOCKER_COMPOSE_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app"
+
 
 def run_command(command, working_dir=None):
     """
@@ -367,6 +443,7 @@ def run_command(command, working_dir=None):
         print(e.stderr)
         exit(1)
 
+
 def run_docker_compose(compose_path):
     """
     Exécute Docker Compose à partir d'un chemin spécifique.
@@ -382,6 +459,4 @@ def run_docker_compose(compose_path):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
-
-
+    app.run(debug=True, host="0.0.0.0")
