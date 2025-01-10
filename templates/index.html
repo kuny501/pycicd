@@ -36,11 +36,17 @@
             <h2 class="text-xl font-semibold mb-4">Pipelines existants</h2>
             <div id="pipelinesList" class="space-y-4"></div>
         </div>
+                <h1>Logs du Backend</h1>
+    <div id="log-container"></div>
+
+    </div>
     </div>
     </div>
 
-
+     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script>
+
+
         // Frontend JavaScript
         let token = localStorage.getItem('token');
         let userRole = localStorage.getItem('user_role');
@@ -100,6 +106,27 @@
             document.getElementById('stage-checkout').textContent = status.checkout || 'Waiting...';
             // Update other stages...
         }
+         const socket = io('http://localhost:5000');
+        const logContainer = document.getElementById('log-container');
+
+        socket.on('log_message', function(data) {
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.textContent = data.message;
+            logContainer.appendChild(logEntry);
+
+            // Auto-scroll vers le bas
+            logContainer.scrollTop = logContainer.scrollHeight;
+        });
+
+        // Gestion des erreurs de connexion
+        socket.on('connect_error', (error) => {
+            console.error('Erreur de connexion WebSocket:', error);
+            const errorDiv = document.createElement('div');
+            errorDiv.style.color = 'red';
+            errorDiv.textContent = 'Erreur de connexion au serveur';
+            logContainer.appendChild(errorDiv);
+        });
     </script>
 </body>
 </html>

@@ -4,8 +4,9 @@ import threading
 import time
 from http.server import ThreadingHTTPServer
 import tarfile
+from socket import SocketIO
 
-from flask import Flask, request, jsonify, redirect, render_template, make_response, session
+from flask import Flask, request, jsonify, redirect, render_template, make_response, session, logging
 from flask_cors import CORS
 from git import Repo
 from oauth2client import client
@@ -17,11 +18,14 @@ import json
 from functools import wraps
 from jwt import encode, decode
 import subprocess
-
+from flask_socketio import SocketIO
+import logging
 
 from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
 CORS(app)
 
 # Configuration
@@ -195,10 +199,10 @@ def verify_auth():
 
 @app.route('/deploy', methods=['POST'])
 @require_role('viewer')
-def deploy():
+def deploy(rollbackMode=False):
     """Handle deployment request"""
     try:
-        if os.path.isdir("./tmp.old") and os.path.isdir("./tmp"): #If tmp.old already exists, we can delete it as it will be replaced by next tmp:
+        if os.path.isdir("./tmp.old") and os.path.isdir("./tmp") and rollbackMode==False: #If tmp.old already exists, we can delete it as it will be replaced by next tmp:
             os.system("powershell /c \"Remove-Item -Recurse -Force tmp.old\"")
             print("Deleted tmp.old")
 
@@ -207,21 +211,27 @@ def deploy():
             print("Renamed tmp to tmp.old")
             os.system("powershell /c \"Remove-Item ./tmp/librarimt.tar.gz\"")
             print("Deleted project tar.gz")
+        if not rollbackMode :
+            # 1. Pull latest code from GitHub
+            repo_url = request.json.get('repo_url')
+            clone_github_repo(repo_url, './tmp/app')
+            print("Cloned repo successfully")
 
-        # 1. Pull latest code from GitHub
-        repo_url = request.json.get('repo_url')
-        clone_github_repo(repo_url, './tmp/app')
-        print("Cloned repo successfully")
+            # Create project archive
+            with tarfile.open("./tmp/librarimt.tar.gz", "w:gz") as archive:
+                archive.add("./tmp/app/.", arcname=os.path.basename("./tmp/app/."))
 
-        # Create project archive
-        with tarfile.open("./tmp/librarimt.tar.gz", "w:gz") as archive:
-            archive.add("./tmp/app/.", arcname=os.path.basename("./tmp/app/."))
+            # 2. Compilation maven/gradle avec run des TU
+            """# Run tests with Maven or Gradle"""
+            BACKEND_PATH = r"./tmp/app/LibrarIMTBackend"
 
-        # 2. Compilation maven/gradle avec run des TU
-        """# Run tests with Maven or Gradle"""
-        BACKEND_PATH = r"./tmp/app/LibrarIMTBackend"
+        else:
+            BACKEND_PATH = r"./tmp.old/app/LibrarIMTBackend"
         compile_and_test_java_project(BACKEND_PATH)
         print("Compilation maven TU successfully")
+
+        print("Notation du code SonarQube...")
+       # run_maven_command("clean verify sonar:sonar -Dsonar.projectKey=LibrarIMT -Dsonar.projectName='LibrarIMT' -Dsonar.host.url=http://localhost:9000 -Dsonar.token=sqp_e771c5daffbe8923cb1dcd3eaa2d992361a5272f", BACKEND_PATH)
 
         # 3. Connect to VM and deploy
         ssh = paramiko.SSHClient()
@@ -277,11 +287,21 @@ def deploy():
         else:
             return jsonify({'status': 'error', 'message': "Issue encountered with running docker-compose up -d on "+CONFIG['VM_HOST']+" Code: "+str(exit_status)}), 500
 
+        #8. Integration test
+        print("Running integration test")
+        response = requests.get('http://'+CONFIG['VM_HOST']+':3000')
+        print("Integration test status:", response.status_code)
+        if (response.status_code > 399):
+            rollback()
+            return jsonify({'status': 'error', 'integration_test_status': response.status_code}), 500
         return jsonify({'status': 'success', 'message': 'Deployment completed'})
 
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+
+def rollback():
+    deploy(rollbackMode=True)
 
 def run_ssh_sudo_command(command,ssh):
     session = ssh.get_transport().open_session()
@@ -435,6 +455,25 @@ def run_docker_compose(compose_path):
 
     command = ["docker-compose", "up", "--build", "-d"]
     run_command(command, compose_path)
+
+# Configuration du logging
+class SocketIOHandler(logging.Handler):
+    def emit(self, record):
+        log_entry = self.format(record)
+        socketio.emit('log_message', {'message': log_entry})
+
+# Configurer le logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+socket_handler = SocketIOHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+socket_handler.setFormatter(formatter)
+logger.addHandler(socket_handler)
+
+@app.route('/trigger_log')
+def trigger_log():
+    logger.info("Ceci est un message de log test")
+    return "Log envoyé"
 
 
 if __name__ == '__main__':
