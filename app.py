@@ -1,3 +1,10 @@
+import http.server
+import socketserver
+import threading
+import time
+from http.server import ThreadingHTTPServer
+import tarfile
+
 from flask import Flask, request, jsonify, redirect, render_template, make_response, session
 from flask_cors import CORS
 from git import Repo
@@ -25,7 +32,7 @@ CONFIG = {
     'JWT_SECRET_KEY': os.getenv('JWT_SECRET_KEY', 'your-secret-key'),
     'VM_HOST': os.getenv('VM_HOST'),
     'VM_USER': os.getenv('VM_USER'),
-    'VM_KEY_PATH': os.getenv('VM_KEY_PATH'),
+    'VM_PASS': os.getenv('VM_PASS'),
 }
 
 # Database simulation (in production, use a real database)
@@ -191,45 +198,102 @@ def verify_auth():
 def deploy():
     """Handle deployment request"""
     try:
+        if os.path.isdir("./tmp.old") and os.path.isdir("./tmp"): #If tmp.old already exists, we can delete it as it will be replaced by next tmp:
+            os.system("powershell /c \"Remove-Item -Recurse -Force tmp.old\"")
+            print("Deleted tmp.old")
+
+        if os.path.isdir("./tmp"): #If tmp folder already exists, we rename it to "tmp.old"
+            os.rename("tmp", "tmp.old")
+            print("Renamed tmp to tmp.old")
+            os.system("powershell /c \"Remove-Item ./tmp/librarimt.tar.gz\"")
+            print("Deleted project tar.gz")
+
         # 1. Pull latest code from GitHub
         repo_url = request.json.get('repo_url')
         clone_github_repo(repo_url, './tmp/app')
         print("Cloned repo successfully")
 
+        # Create project archive
+        with tarfile.open("./tmp/librarimt.tar.gz", "w:gz") as archive:
+            archive.add("./tmp/app/.", arcname=os.path.basename("./tmp/app/."))
+
         # 2. Compilation maven/gradle avec run des TU
         """# Run tests with Maven or Gradle"""
-        BACKEND_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app\LibrarIMTBackend"
+        BACKEND_PATH = r"./tmp/app/LibrarIMTBackend"
         compile_and_test_java_project(BACKEND_PATH)
         print("Compilation maven TU successfully")
-
-        '''3. 
-        run_docker_compose(DOCKER_COMPOSE_PATH)
-        print("Built Docker image successfully")'''
 
         # 3. Connect to VM and deploy
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], password="IMTCICD123$")
+        ssh.connect(CONFIG['VM_HOST'], username=CONFIG['VM_USER'], password=CONFIG['VM_PASS'])
 
-        # 4. Copy app to VM
-        run_command("cmd.exe /c cd")
-        run_command("cmd.exe /c \"scp tmp/app appserver@"+ CONFIG['VM_HOST'] + ":/home/appserver/LibrarIMT\"")
+        # 4. Gathering Local IPV4
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        LHOST_IP = s.getsockname()[0]
 
-        # 5. Run deployment commands
-        commands = [
-            'cd LibrarIMT && docker-compose up -d',
-        ]
+        # 5. Open Python HTTP Server so the code is available to the VM
+        http_server_port = 8001
+        handler = http.server.SimpleHTTPRequestHandler
+        server = ThreadingHTTPServer(("0.0.0.0", http_server_port), handler)
+        server_thread = threading.Thread(target=server.serve_forever)
+        server_thread.daemon = True
+        server_thread.start()
+        print("HTTP Server listening on 0.0.0.0:", http_server_port)
 
-        for cmd in commands:
-            stdin, stdout, stderr = ssh.exec_command(cmd)
-            print(stdout.read().decode())
-            if stderr.channel.recv_exit_status() != 0:
-                raise Exception(f"Deployment failed: {stderr.read().decode()}")
+        # 6. Copy app to VM
+        channel = ssh.invoke_shell() #We first open a terminal then send keyboard inputs to it
+        channel.send("mkdir LibrarIMT\n")
+        print("Creating LibrarIMT folder")
+        time.sleep(1)
+        run_ssh_sudo_command("cd LibrarIMT && sudo docker-compose down --rmi all --volumes --remove-orphans",ssh) #Using sudo will request the password
+        print("Exiting former containers, deleting docker images on VM")
+        time.sleep(2) #Just to be sure
+        print("2sec timer over")
+        channel.send("rm -rf LibrarIMT\n")
+        channel.send("rm -rf librarimt.tar.*\n")
+        time.sleep(2)
+        print("Downloading project from CICD server...")
+        print("$ wget "+str(LHOST_IP)+":"+str(http_server_port)+"/tmp/librarimt.tar.gz\n")
+        stdin, stdout, stderr = ssh.exec_command("wget "+str(LHOST_IP)+":"+str(http_server_port)+"/tmp/librarimt.tar.gz\n") #Downloading project from LHOST
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status == 0 or exit_status == 8:
+            print("Project downloaded succesfully on: "+ CONFIG['VM_HOST'])
+        else:
+            print("Something may have gone wrong while downloading files. Code: "+str(exit_status)+". Skipping")
+
+        # Extracting the archive
+        channel.send("mkdir LibrarIMT\n")
+        channel.send("tar -xf librarimt.tar.gz -C LibrarIMT\n")
+        time.sleep(2)
+
+        # 7. Executing Docker-Compose
+        print("Executing Docker-compose")
+        exit_status = run_ssh_sudo_command("cd LibrarIMT && sudo docker-compose up -d --build",ssh)
+        if exit_status == 0:
+            print("Docker-compose finished succesfully on: "+ CONFIG['VM_HOST'])
+        else:
+            return jsonify({'status': 'error', 'message': "Issue encountered with running docker-compose up -d on "+CONFIG['VM_HOST']+" Code: "+str(exit_status)}), 500
 
         return jsonify({'status': 'success', 'message': 'Deployment completed'})
 
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+def run_ssh_sudo_command(command,ssh):
+    session = ssh.get_transport().open_session()
+    session.set_combine_stderr(True)
+    session.get_pty()
+    session.exec_command("sudo bash -c \""+ command +"\"")
+    stdin = session.makefile('wb', -1)
+    stdout = session.makefile('rb', -1)
+    stdin.write(CONFIG['VM_PASS'] + '\n')
+    stdin.flush()
+    exit_status = stdout.channel.recv_exit_status()
+    return exit_status
 
 
 @app.route('/pipeline/status', methods=['GET'])
@@ -305,17 +369,15 @@ def get_user_from_token(auth_header):
 
 def clone_github_repo(repo_url, destination_folder):
     try:
-        print(f"Clonage du dépôt depuis {repo_url} dans {destination_folder}...")
+        print(f"Cloning {repo_url} into {destination_folder}...")
         Repo.clone_from(repo_url, destination_folder)
-        print("Clonage terminé avec succès !")
     except Exception as e:
-        print(f"Erreur lors du clonage : {e}")
+        return jsonify({"status" : "error", "message": e}), 500
 
 
 def run_maven_command(command, project_path):
     try:
-        # Spécifiez le chemin complet vers mvn.bat
-        maven_executable = r"E:\IMT\CI2\PCS\apache-maven-3.9.9-bin\apache-maven-3.9.9\bin\mvn.cmd" # Remplacez avec votre propre chemin si nécessaire
+        maven_executable = "mvn"
         full_command = [maven_executable] + command
         print (full_command)
         print(f"Exécution de la commande : {' '.join(full_command)} dans {project_path}")
@@ -323,15 +385,9 @@ def run_maven_command(command, project_path):
         print("Sortie standard :")
         print(result.stdout)
     except FileNotFoundError:
-        print("Erreur : Maven n'est pas trouvé. Vérifiez le chemin de Maven.")
-        exit(1)
+        return jsonify({"status" : "error", "message": "Maven was not found on CICD Server: "+ str(FileNotFoundError)}), 500
     except subprocess.CalledProcessError as e:
-        print("Erreur lors de l'exécution de Maven.")
-        print("Sortie standard :")
-        print(e.stdout)
-        print("Sortie d'erreur :")
-        print(e.stderr)
-        exit(1)
+        return jsonify({"status" : "error", "message": str(e)}), 500
 
 def compile_and_test_java_project(project_path):
     # Liste des commandes à exécuter
@@ -343,7 +399,7 @@ def compile_and_test_java_project(project_path):
         run_maven_command(command, project_path)
 
 # Chemin en dur pour le répertoire du fichier Docker Compose
-DOCKER_COMPOSE_PATH = r"E:\IMT\CI2\PCS\pycicd\tmp\app"
+DOCKER_COMPOSE_PATH = r"./tmp/app"
 
 def run_command(command, working_dir=None):
     """
