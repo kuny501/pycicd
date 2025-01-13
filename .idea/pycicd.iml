@@ -7,5 +7,6 @@
     <orderEntry type="jdk" jdkName="Python 3.13 (pycicd)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="library" name="lucide" level="application" />
+    <orderEntry type="library" name="socket.io" level="application" />
   </component>
 </module>

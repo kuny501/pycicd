@@ -1,22 +1,15 @@
 import http.server
-import socketserver
 import threading
 import time
 from http.server import ThreadingHTTPServer
 import tarfile
-from socket import SocketIO
 
-from flask import Flask, request, jsonify, redirect, render_template, make_response, session, logging
+from flask import Flask, request, jsonify, redirect, render_template
 from flask_cors import CORS
 from git import Repo
-from oauth2client import client
 import paramiko
-import docker
 import os
-import git
-import json
 from functools import wraps
-from jwt import encode, decode
 import subprocess
 from flask_socketio import SocketIO
 import logging
